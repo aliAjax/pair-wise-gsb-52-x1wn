@@ -29,9 +29,14 @@ python3 app.py --db ./data.db --port 8328
 - `GET /api/records`：记录列表，可带`state`和`limit`参数。
 - `GET /api/records/{id}`：记录详情。
 - `GET /api/records/{id}/audit`：审计时间线。
+- `GET /api/records/{id}/vouchers`：服务凭证台账，含已撤销凭证及撤销原因。
 - `GET /api/stats`：状态统计。
 - `POST /api/records`：创建记录，请求体为`{"reference":"...","data":{...}}`。
 - `POST /api/records/{id}/actions/{action}`：执行业务动作，请求体为`{"expected_version":1,"data":{...}}`。
+
+## 服务凭证台账
+
+每次登记服务（`log_service`）必须提供`voucher_no`（凭证号）、`started_at`（ISO开始时间）、`session_minutes`（时长）和`provider`（服务人员），凭证与计划汇总在同一事务写入。同一凭证号重复提交只计一次（幂等返回，不产生新凭证）。`void_voucher`动作用于撤销凭证，必须填写`void_reason`，撤销后按有效凭证反向重算汇总。旧数据升级时按已有`delivered_minutes`自动生成`MIG-{id}`迁移凭证，此后计划汇总始终由有效凭证重新加总。执行`review`或`close`前若计划汇总与台账合计不一致，将返回冲突并说明差额，状态不流转。
 
 除`/health`和`/`外，请求需提供`X-User-Id`、`X-Role`，可选`X-Org`。
 

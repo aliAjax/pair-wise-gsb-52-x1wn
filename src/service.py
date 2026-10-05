@@ -2,9 +2,9 @@
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
-from .domain import Actor, PermissionDenied, text
+from .domain import Actor, NotFound, PermissionDenied, integer, text, timestamp
 from .repository import Repository
-from .rules import DomainRules
+from .rules import GUARDED_ACTIONS, DomainRules
 
 
 class Service:
@@ -51,7 +51,37 @@ class Service:
             raise PermissionDenied("角色无权执行该操作")
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
-        new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
+        data = dict(data or {})
+        ledger_total: Optional[int] = None
+        voucher: Optional[Dict[str, Any]] = None
+        voucher_op: Optional[Dict[str, Any]] = None
+        if action == "log_service":
+            voucher_no = data.get("voucher_no")
+            if isinstance(voucher_no, str) and voucher_no.strip():
+                existing = self.repository.find_valid_voucher(record_id, voucher_no.strip())
+                if existing is not None:
+                    self.audit.note(record_id, actor.user_id, "duplicate_voucher", {"voucher_no": voucher_no.strip(), "summary": "同一凭证号重复提交，已忽略"})
+                    return self.repository.get(record_id)
+            ledger_total = self.repository.voucher_sum(record_id)
+        elif action == "void_voucher":
+            voucher_no = text({"voucher_no": data.get("voucher_no", "")}, "voucher_no")
+            voucher = self.repository.find_valid_voucher(record_id, voucher_no)
+            if voucher is None:
+                raise NotFound("有效凭证不存在或已撤销")
+            ledger_total = self.repository.voucher_sum(record_id)
+        elif action in GUARDED_ACTIONS:
+            self.rules.require_summary_consistent(record, self.repository.voucher_sum(record_id))
+        new_state, new_payload, summary = self.rules.apply_action(record, action, data, ledger_total=ledger_total, voucher=voucher)
+        if action == "log_service":
+            voucher_op = {
+                "kind": "log",
+                "voucher_no": text(data, "voucher_no"),
+                "started_at": timestamp(data, "started_at"),
+                "minutes": integer(data, "session_minutes", 1),
+                "provider": text(data, "provider"),
+            }
+        elif action == "void_voucher":
+            voucher_op = {"kind": "void", "voucher_no": text(data, "voucher_no"), "reason": text(data, "void_reason")}
         return self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
@@ -59,8 +89,14 @@ class Service:
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details={"summary": summary, "input": data, "from": record["state"], "to": new_state},
+            voucher=voucher_op,
         )
+
+    def vouchers(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_vouchers(record_id)
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)

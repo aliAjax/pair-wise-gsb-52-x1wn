@@ -1,13 +1,14 @@
 """特殊教育支持计划合规领域规则与状态转换。"""
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
-from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
+from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list, timestamp
 
 
 INITIAL_STATE = "draft"
 CREATE_ROLES = {'case_manager'}
-ACTION_ROLES = {'consent': {'parent_rep'}, 'activate': {'case_manager'}, 'log_service': {'case_manager', 'specialist'}, 'review': {'administrator'}, 'amend': {'case_manager'}, 'close': {'administrator'}}
-TRANSITIONS = {'consent': {'draft': 'consented'}, 'activate': {'consented': 'active'}, 'log_service': {'active': 'active'}, 'review': {'active': 'under_review'}, 'amend': {'under_review': 'active'}, 'close': {'active': 'closed', 'under_review': 'closed'}}
+ACTION_ROLES = {'consent': {'parent_rep'}, 'activate': {'case_manager'}, 'log_service': {'case_manager', 'specialist'}, 'void_voucher': {'case_manager', 'specialist'}, 'review': {'administrator'}, 'amend': {'case_manager'}, 'close': {'administrator'}}
+TRANSITIONS = {'consent': {'draft': 'consented'}, 'activate': {'consented': 'active'}, 'log_service': {'active': 'active'}, 'void_voucher': {'active': 'active', 'under_review': 'under_review'}, 'review': {'active': 'under_review'}, 'amend': {'under_review': 'active'}, 'close': {'active': 'closed', 'under_review': 'closed'}}
+GUARDED_ACTIONS = {'review', 'close'}
 
 
 class DomainRules:
@@ -57,7 +58,21 @@ class DomainRules:
             raise Conflict("当前状态不允许执行%s" % action)
         return allowed
 
-    def apply_action(self, record: Dict[str, Any], action: str, data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
+    def require_summary_consistent(self, record: Dict[str, Any], ledger_total: int) -> None:
+        delivered = int(record["payload"].get("delivered_minutes", 0))
+        if delivered != int(ledger_total):
+            raise Conflict(
+                "计划汇总与服务台账不一致：汇总%s分钟，有效凭证合计%s分钟，差额%s分钟"
+                % (delivered, int(ledger_total), delivered - int(ledger_total))
+            )
+
+    @staticmethod
+    def _recount(payload: Dict[str, Any], delivered: int, changes: Dict[str, Any]) -> None:
+        changes["delivered_minutes"] = delivered
+        changes["missing_minutes"] = int(payload["service_minutes"]) - delivered
+        changes["compliance_rate"] = round(delivered / int(payload["service_minutes"]) * 100, 2)
+
+    def apply_action(self, record: Dict[str, Any], action: str, data: Dict[str, Any], ledger_total: Optional[int] = None, voucher: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any], str]:
         new_state = self.require_transition(record, action)
         data = dict(data or {})
         p = dict(record["payload"])
@@ -80,13 +95,22 @@ class DomainRules:
             summary = "支持计划生效"
         elif action == "log_service":
             session = integer(data, "session_minutes", 1)
-            if session + int(p["delivered_minutes"]) > int(p["service_minutes"]):
+            text(data, "voucher_no")
+            timestamp(data, "started_at")
+            provider = text(data, "provider")
+            base = int(ledger_total) if ledger_total is not None else int(p["delivered_minutes"])
+            if session + base > int(p["service_minutes"]):
                 raise ValidationError("记录服务超过计划分钟数")
-            changes["delivered_minutes"] = int(p["delivered_minutes"]) + session
-            changes["last_provider"] = text(data, "provider")
-            changes["missing_minutes"] = int(p["service_minutes"]) - changes["delivered_minutes"]
-            changes["compliance_rate"] = round(changes["delivered_minutes"] / int(p["service_minutes"]) * 100, 2)
+            self._recount(p, base + session, changes)
+            changes["last_provider"] = provider
             summary = "服务记录已登记"
+        elif action == "void_voucher":
+            text(data, "voucher_no")
+            text(data, "void_reason")
+            base = int(ledger_total) if ledger_total is not None else int(p["delivered_minutes"])
+            voided = int(voucher["minutes"]) if voucher else 0
+            self._recount(p, max(0, base - voided), changes)
+            summary = "服务凭证已撤销并反向重算"
         elif action == "review":
             changes["progress_note"] = text(data, "progress_note")
             changes["review_overdue"] = False

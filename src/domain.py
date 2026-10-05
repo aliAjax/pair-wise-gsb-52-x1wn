@@ -1,5 +1,6 @@
 """领域基础类型与输入校验。"""
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List
 
 
@@ -71,6 +72,15 @@ def integer(data: Dict[str, Any], key: str, minimum: int = None, maximum: int = 
         raise ValidationError("%s不能小于%s" % (key, minimum))
     if maximum is not None and value > maximum:
         raise ValidationError("%s不能大于%s" % (key, maximum))
+    return value
+
+
+def timestamp(data: Dict[str, Any], key: str) -> str:
+    value = text(data, key)
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError("%s必须是ISO时间格式" % key) from exc
     return value
 
 
