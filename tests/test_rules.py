@@ -21,9 +21,10 @@ class RulesTest(unittest.TestCase):
     def test_action_calculation(self):
         action, role, data, expected_state = FLOW[0]
         record = {"id": 1, "state": self.rules.INITIAL_STATE, "payload": self.rules.prepare_create(CREATE_DATA)}
-        state, payload, summary = self.rules.apply_action(record, action, data)
+        state, payload, summary, ledger = self.rules.apply_action(record, action, data)
         self.assertEqual(state, expected_state)
         self.assertTrue(payload["consent"])
+        self.assertIsNone(ledger)
 
     def test_invalid_input(self):
         invalid = dict(CREATE_DATA)

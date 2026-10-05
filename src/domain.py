@@ -23,6 +23,20 @@ class Conflict(DomainError):
     code = "conflict"
 
 
+class VoucherConflict(Conflict):
+    status = 409
+    code = "voucher_conflict"
+
+
+class LedgerMismatch(Conflict):
+    status = 409
+    code = "ledger_mismatch"
+
+    def __init__(self, message: str, difference: int = 0) -> None:
+        super().__init__(message)
+        self.difference = difference
+
+
 class PermissionDenied(DomainError):
     status = 403
     code = "permission_denied"
